@@ -7,7 +7,9 @@ import (
 	"io/ioutil"
 	"os"
 
+	"bytes"
 	"gopkg.in/yaml.v3"
+	"os/exec"
 )
 
 const defaultHostname = "github.com"
@@ -15,6 +17,12 @@ const defaultHostname = "github.com"
 type configEntry struct {
 	User  string
 	Token string `yaml:"oauth_token"`
+}
+type execEntry struct {
+	Exec struct {
+		Command string   `yaml:"command"`
+		Args    []string `yaml:"args"`
+	} `yaml:"exec"`
 }
 
 func parseOrSetupConfigFile(fn string) (*configEntry, error) {
@@ -54,11 +62,36 @@ func parseConfig(r io.Reader) (*configEntry, error) {
 	}
 	for i := 0; i < len(config.Content[0].Content)-1; i = i + 2 {
 		if config.Content[0].Content[i].Value == defaultHostname {
+
+			var execEntries []execEntry
 			var entries []configEntry
-			err = config.Content[0].Content[i+1].Decode(&entries)
+			err := config.Content[0].Content[i+1].Decode(&execEntries)
+			// If content is execOptions, run the command to get the auth config
+			if err == nil {
+				entry := execEntries[0]
+				stdout := &bytes.Buffer{}
+				stderr := &bytes.Buffer{}
+				cmd := exec.Command(entry.Exec.Command, entry.Exec.Args...)
+				cmd.Stdout = stdout
+				cmd.Stderr = stderr
+				if err := cmd.Run(); err != nil {
+					return nil, fmt.Errorf("exec: %v with stdout %q and stderr %q", err, stdout.Bytes(), stderr.Bytes())
+				}
+
+				var configEntry configEntry
+				err = yaml.Unmarshal(stdout.Bytes(), &configEntry)
+				if err != nil {
+					return nil, err
+				}
+				entries = append(entries, configEntry)
+			} else {
+				err = config.Content[0].Content[i+1].Decode(&entries)
+			}
+
 			if err != nil {
 				return nil, err
 			}
+
 			return &entries[0], nil
 		}
 	}
